@@ -2,6 +2,18 @@ pacman::p_load(
   tidyverse,readxl
 )
 
+consolidar_grupo <- function(dados, colunas_grupo, prefixo) {
+  dados %>%
+    select(all_of(colunas_grupo)) %>%
+    pmap_chr(function(...) {
+      respostas <- c(...)
+      indices <- which(respostas == 1)
+      if(length(indices) == 0) return(NA_character_)
+      itens_limpos <- gsub(paste0("^", prefixo), "", colunas_grupo[indices])
+      paste(itens_limpos, collapse = "; ")
+    })
+}
+
 file_path <- "./PLANILHA_MATRIZES_ANALISE_RISCO_RESEX.xlsx"
 all_sheets <- excel_sheets("./PLANILHA_MATRIZES_ANALISE_RISCO_RESEX.xlsx")
 
@@ -254,18 +266,6 @@ destino_caça_impropria <- c("COZINCOM","ANIMCOME","DEIXAMAT","ENTERRA","ESCALDA
 animal_come_caça_impropria <- names(list_of_tables$Caça)[startsWith(names(list_of_tables$Caça), "QA")]
 #animal_come_caça_impropria <- gsub("^QA", "", animal_come_caça_impropria)
 
-# Função para consolidar um grupo de colunas
-consolidar_grupo <- function(dados, colunas_grupo, prefixo) {
-  dados %>%
-    select(all_of(colunas_grupo)) %>%
-    pmap_chr(function(...) {
-      respostas <- c(...)
-      indices <- which(respostas == 1)
-      if(length(indices) == 0) return(NA_character_)
-      itens_limpos <- gsub(paste0("^", prefixo), "", colunas_grupo[indices])
-      paste(itens_limpos, collapse = "; ")
-    })
-}
 
 # Aplicar a todos os grupos
 resultado_caça <- list_of_tables$Caça %>%

@@ -29,6 +29,7 @@ resex_resultado$Caça <- resex_resultado$Caça %>%
       str_detect(problemas_encontrados_caça, "MAGRA|SINT_DO|PERD_PEL|MAGRA|Alt_Carn|Alt_Carn") ~ "Doença sistêmica",
       str_detect(problemas_encontrados_caça, "CHUMBO|URA") ~ "Resquício Bala",
       str_detect(problemas_encontrados_caça, "NÃO_DET") ~ "Nenhum",
+      problema_carne_caça == "NÃO" ~ "Nenhum",
       is.na(problemas_encontrados_caça) ~ NA_character_,
       TRUE ~ "Outros"
     )
@@ -90,3 +91,4 @@ resex_resultado$Caça <- resex_resultado$Caça %>%
       TRUE ~ problema_carne_caça
     )
   )
+
