@@ -22,9 +22,11 @@ georef <- data.frame(Comunidade = c("Escrivão", "Pinhel", "Anã","Vila Franca",
                    -55.8574547,-55.187603,-55.3189155
                    ))
 
+t <- sf::read_sf("./resex_tapajos_arapiuns.kml")
+
 ggplot() +
   geom_sf(data=t) + 
-  geom_point(data=georef,
+  geom_point(data=georef %>% filter(Comunidade %in% georef_com),
              aes(lon,lat, color = Comunidade))
 
 
@@ -481,7 +483,7 @@ mod7 <- glmer(freq_bin ~ caçador_familia * tamanh_familia + (1 | Comunidade),
 mod8 <- glmer(freq_bin ~ caçador_familia * saf_n + (1 | Comunidade),
                data = df2, family = binomial())
 
-mod_interacao <- glmer(freq_bin ~ caçador_familia * animal_consumo_n + 
+mod9<- glmer(freq_bin ~ caçador_familia +  
                          caçador_familia * saf_n + (1 | Comunidade),
                        data = df2, family = binomial())
 
@@ -489,7 +491,7 @@ mod_interacao <- glmer(freq_bin ~ caçador_familia * animal_consumo_n +
 modelos <- list(
   mod1 = mod1, mod2 = mod2, mod3 = mod3, mod4 = mod4,
   mod5 = mod5, mod6 = mod6, mod7 = mod7, mod8 = mod8,
-  mod_interacao = mod_interacao
+  mod9 = mod9
 )
 
 # Tabela comparativa
@@ -506,37 +508,21 @@ summary(mod4)  # Problemas na carne
 summary(mod3)  # Proporção de adultos
 summary(mod6)  # Tipo de casa
 
-# Odds Ratios com IC 95%
-library(broom.mixed)
-tidy(mod4, conf.int = TRUE, exponentiate = TRUE)
-tidy(mod3, conf.int = TRUE, exponentiate = TRUE)
-tidy(mod6, conf.int = TRUE, exponentiate = TRUE)
-
-
 # Juntar variáveis dos melhores modelos
-mod_combined <- glmer(freq_bin ~ caçador_familia + tem_problema + 
+mod_combined <- glmer(freq_bin ~ caçador_familia + caça_problema_n + 
                         prop_adultos + tipo_casa2 + (1 | Comunidade),
                       data = df2, family = binomial())
 
-AIC(mod4, mod_combined)  # Ver se melhorou
+AIC(mod3, mod_combined)  # Ver se melhorou
 
 # Modelo parcimonioso (stepwise backward)
 summary(mod_combined)
 
-# Vamos olhar detalhadamente o mod4
-summary(mod4)
-
 # Odds Ratios
 exp(fixef(mod4))
-exp(confint(mod4, method = "Wald"))
+exp(confint(mod_combined, method = "Wald"))
 
-# Modelo final: mod4 (simples e com melhor AIC)
-mod_final <- mod4
-
-library(ggplot2)
-
-# 1. Gráfico das probabilidades previstas
-pred_data <- ggpredict(mod_final, terms = c("caçador_familia", "tem_problema"))
+pred_data <- ggeffects::ggpredict(mod_combined, terms = c("caçador_familia", "caça_problema_n"))
 
 ggplot(as.data.frame(pred_data), 
        aes(x = x, y = predicted, color = group, group = group)) +
@@ -549,33 +535,7 @@ ggplot(as.data.frame(pred_data),
        color = "Problemas na carne") +
   theme_minimal()
 
-# 2. Gráfico dos efeitos aleatórios (comunidades)
-ranef_plot <- ranef(mod_final, condVar = TRUE)
-dotplot(ranef_plot)
-
-
-library(pROC)
-pred_prob <- predict(mod_final, type = "response")
-roc_curve <- roc(as.numeric(df2$freq_bin == "Frequente") ~ pred_prob)
-plot(roc_curve)
-auc(roc_curve)
-
-# Hipótese: Caçador → mais caça consumida → mais problemas identificados → menor consumo futuro?
-library(mediation)
-
-# Primeiro ajuste os modelos
-model_m <- glmer(caça_consumida_n ~ caçador_familia + (1|Comunidade),
-                 data = df2, family = poisson())
-
-model_y <- glmer(freq_bin ~ caçador_familia + caça_consumida_n + 
-                   caça_problema_n + (1|Comunidade),
-                 data = df2, family = binomial())
-
-# Teste de mediação
-med <- mediate(model_m, model_y, treat = "caçador_familia", 
-               mediator = "caça_consumida_n", sims = 1000)
-summary(med)
-
-plot(med)
+ranef_plot <- ranef(mod_combined, condVar = TRUE)
+lattice::dotplot(ranef_plot)
 
 
