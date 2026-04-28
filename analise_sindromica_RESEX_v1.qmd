@@ -1,0 +1,1022 @@
+---
+title: "Perfil sindrômico e exposição à caça em comunidades extrativistas"
+subtitle: "RESEX Tapajós-Arapiuns — Análise exploratória"
+author: "Ayrton"
+date: today
+lang: pt
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Sumário"
+    toc-location: left
+    number-sections: true
+    theme: flatly
+    code-fold: true
+    code-summary: "Ver código"
+    code-tools: true
+    self-contained: true
+    fig-width: 9
+    fig-height: 6
+    fig-dpi: 150
+execute:
+  warning: false
+  message: false
+  echo: true
+---
+
+```{r setup}
+#| include: false
+
+library(tidyverse)
+library(cluster)
+library(factoextra)
+library(broom)
+library(sf)
+library(geobr)
+library(rnaturalearth)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(pacman)
+
+pacman::p_load(tidyverse, readxl)
+
+# Função de consolidação de grupos
+consolidar_grupo <- function(dados, colunas_grupo, prefixo) {
+  dados %>%
+    select(all_of(colunas_grupo)) %>%
+    pmap_chr(function(...) {
+      respostas <- c(...)
+      indices <- which(respostas == 1)
+      if (length(indices) == 0) return(NA_character_)
+      itens_limpos <- gsub(paste0("^", prefixo), "", colunas_grupo[indices])
+      paste(itens_limpos, collapse = "; ")
+    })
+}
+
+# Carregamento dos dados
+setwd("./")
+file_path <- "./PLANILHA_MATRIZES_ANALISE_RISCO_RESEX.xlsx"
+all_sheets <- excel_sheets(file_path)
+list_of_tables <- map(all_sheets, ~ read_excel(file_path, sheet = .x))
+names(list_of_tables) <- all_sheets
+
+# Renomear colunas problemáticas
+list_of_tables$Caça <- list_of_tables$Caça %>%
+  rename(OUTROS = CPOUTROS, QUEIMA = CPQUEIMA)
+
+# Join com tabela de comunidades
+for (tabela in c("Etário", "Casa", "Hábitos", "Atividades", "Saúde", "Caça", "Animais")) {
+  list_of_tables[[tabela]] <- list_of_tables[[tabela]] %>%
+    left_join(list_of_tables$Comunidade, by = "Amostra")
+}
+```
+
+# Introdução
+
+Este documento apresenta uma análise exploratória do perfil sindrômico de famílias em comunidades caçadoras da **Reserva Extrativista Tapajós-Arapiuns**, no Pará. A análise busca responder a seis perguntas principais:
+
+::: {.callout-note}
+## Perguntas de pesquisa
+
+1. **P1** — Qual é o perfil sindrômico das famílias na RESEX?
+2. **P2** — Existe gradiente de exposição a fauna potencialmente infectada entre as famílias?
+3. **P3** — A intensidade da caça prediz síndrome infecciosa aguda?
+4. **P4** — Síndrome aguda e exposição à caça são fenômenos geograficamente dissociados?
+5. **P5** — Composição etária e saneamento explicam o gradiente observado?
+6. **P6** — A atividade do chefe da família diferencia os clusters sindrômicos?
+:::
+
+**Dado:** 567 famílias, 35 comunidades  
+**Unidade de análise:** domicílio/família  
+**Abordagem:** cada síndrome = ao menos um membro da família relatou o problema, mantendo consistência com os dados de exposição à caça.
+
+---
+
+# Preparação dos dados
+
+```{r preparacao}
+saude <- list_of_tables$Saúde
+
+# Variáveis com identificação incerta — excluídas da análise
+vars_nao_identificadas <- c(
+  "TDORPEIT", "TVMEDIO", "TVNAOSAB",
+  "FALTA", "FALTCDOR", "FCDORCAB", "FCDORMUS", "FCBOLVRM", "FALTREM",
+  "TOCATPEIT", "TOQUENTU", "TOPOEIR",
+  "BSSIM", "AOSIM", "REMFARM", "REMCASEI", "VIS_SAU", "OBIT_DEC",
+  "TRAT_INA", "Dia_Quad", "Reza", "H_recuper", "Obt_s_id", "Obt_c_id",
+  "ANECLAMP", "ANSINPAN", "ANINVEST", "ANPOSTUMOR"
+)
+
+problemas_saude_homem  <- setdiff(names(saude)[startsWith(names(saude), "H")], vars_nao_identificadas)
+problemas_saude_mulher <- setdiff(names(saude)[startsWith(names(saude), "M")], vars_nao_identificadas)
+problemas_saude_idoso  <- setdiff(names(saude)[startsWith(names(saude), "I")], vars_nao_identificadas)
+problemas_saude_crianc <- setdiff(names(saude)[startsWith(names(saude), "C")], vars_nao_identificadas)
+problemas_saude_tosse  <- names(saude)[names(saude) %in% c("TOSSECA", "TOSSMUCO", "TOSINUS", "TSECMUCO")]
+```
+
+---
+
+# P1 — Perfil sindrômico das famílias {#perfil-sindromico}
+
+## Construção das síndromes
+
+Sete síndromes foram definidas a partir dos sintomas autorreferidos, agrupando condições com mecanismo fisiopatológico comum. A lógica de qualquer membro da família garante que o perfil domiciliar de adoecimento seja capturado, não apenas o individual.
+
+
+
+
+```{r sindromes}
+saude_cluster <- saude %>%
+  mutate(
+    sind_resp = if_any(c("HASMA", "MASMA", "IASMA", "CASMA",
+                         "HGRIPE", "MGRIPE", "IGRIPE", "CGRIPE",
+                         "HRINITE", "MRINIALE",
+                         "HSINUSIT", "MSINUSIT", "ISINUSIT", "CSINUSIT",
+                         "HTOSSE", "MTOSSE", "ITOSSE", "CTOSSE",
+                         "TOSSECA", "TOSSMUCO", "TSECMUCO", "TOSINUS"), ~ . == 1),
+    sind_febril = if_any(c("HFEBRE", "MFEBRE", "IFEBRE", "CFEBRE",
+                           "HGRIPE", "MGRIPE", "IGRIPE", "CGRIPE",
+                           "HVIROSE", "MVIROSE"), ~ . == 1),
+    sind_osteo = if_any(c("HREUMAT", "MREUMAT", "IREUMAT", "CREUMAT",
+                          "HDORCAB", "MDORCAB", "IDORCAB", "CADORCAB",
+                          "HDORMUSC", "MDORMUSC", "IDORMUSC", "CDORMUSC",
+                          "HDORCOLU", "MDORCOLU", "IDORCOLU",
+                          "HDORJOEL", "IDORJOEL"), ~ . == 1),
+    sind_gi = if_any(c("HDIARREIA", "MDIARREIA", "IDIARREIA", "CDIAREIA",
+                       "HESTOMAG", "MGASTRIT", "IGASTRIT",
+                       "HVOMIT", "MVOMIT", "IVOMIT", "CVOMIT",
+                       "HDORESTG"), ~ . == 1),
+    sind_cardiomet = if_any(c("HPRESALT", "MPRESALT", "IPRESALT",
+                              "HDIABET", "MDIABETE", "IDIABETE",
+                              "HPROBCOL", "MPROBCOL",
+                              "HPROBCOR", "MCORACGD", "HCORACGD"), ~ . == 1),
+    sind_neuro = if_any(c("ANPERMOV", "ANPERCON", "ANDIFALA",
+                          "ANPERVIS", "ANPERAUD", "ANNEUROL",
+                          "ANDEPRES", "ANTONTURA", "ANMEMORI"), ~ . == 1),
+    sind_derm_paras = if_any(c("HMALARIA", "HHANSENI",
+                               "IINFCRIM", "IINFCURI",
+                               "IMICOSE", "CAMICOSE", "TMICOSE",
+                               "CINFRESAG"), ~ . == 1)
+  ) %>%
+  mutate(across(starts_with("sind_"), as.integer))
+```
+
+## Clustering k-means
+
+Cada família foi representada como um vetor binário de sete dimensões (uma por síndrome). O k-means agrupou famílias com perfis similares. A escolha de k foi orientada pelo método do cotovelo e validada pelo silhouette médio.
+
+```{r clustering}
+vars_sind <- c("sind_resp", "sind_febril", "sind_osteo",
+               "sind_gi", "sind_cardiomet", "sind_neuro", "sind_derm_paras")
+
+mat_cluster <- saude_cluster %>%
+  select(Amostra, Comunidade, all_of(vars_sind)) %>%
+  drop_na(all_of(vars_sind))
+```
+
+```{r cotovelo}
+#| fig-cap: "Método do cotovelo para escolha do número de clusters. A queda mais expressiva ocorre de k=1 para k=2."
+set.seed(42)
+fviz_nbclust(
+  mat_cluster %>% select(all_of(vars_sind)),
+  kmeans, method = "wss", k.max = 10
+) + labs(title = "Número ótimo de clusters — método do cotovelo") +
+  theme_minimal()
+```
+
+```{r silhouette-k}
+#| fig-cap: "Silhouette médio por número de clusters. k=2 apresenta separação razoável (0.34) com maior parcimônia."
+sil_scores <- map_dfr(2:6, function(k) {
+  set.seed(42)
+  km_tmp <- kmeans(mat_cluster %>% select(all_of(vars_sind)),
+                   centers = k, nstart = 25, iter.max = 100)
+  ss <- silhouette(km_tmp$cluster, dist(mat_cluster %>% select(all_of(vars_sind))))
+  tibble(k = k, silhouette = mean(ss[, 3]))
+})
+
+ggplot(sil_scores, aes(x = k, y = silhouette)) +
+  geom_line(color = "#2E86AB") +
+  geom_point(size = 3, color = "#2E86AB") +
+  geom_vline(xintercept = 2, linetype = "dashed", color = "tomato") +
+  theme_minimal() +
+  labs(title = "Silhouette médio por número de clusters",
+       x = "k", y = "Silhouette médio")
+```
+
+```{r kmeans-final}
+set.seed(42)
+km <- kmeans(
+  mat_cluster %>% select(all_of(vars_sind)),
+  centers = 2, nstart = 25, iter.max = 100
+)
+
+mat_cluster <- mat_cluster %>%
+  mutate(
+    cluster = factor(km$cluster),
+    cluster_label = case_when(
+      cluster == 1 ~ "Sem síndrome aguda predominante",
+      cluster == 2 ~ "Síndrome gripal/infecciosa aguda"
+    )
+  )
+```
+
+```{r silhouette-plot}
+#| fig-cap: "Silhouette por família. Silhouette médio = 0.34, sem valores negativos — separação moderada e aceitável para dados binários."
+sil <- silhouette(as.integer(mat_cluster$cluster),
+                  dist(mat_cluster %>% select(all_of(vars_sind))))
+fviz_silhouette(sil) +
+  theme_minimal() +
+  labs(title = "Silhouette por família — coesão interna dos clusters")
+```
+
+```{r pca-plot}
+#| fig-cap: "Projeção PCA dos clusters. Os dois grupos ocupam regiões distintas no espaço multivariado com sobreposição mínima na fronteira."
+fviz_cluster(km,
+             data = mat_cluster %>% select(all_of(vars_sind)),
+             geom = "point", ellipse.type = "convex",
+             palette = "jco", ggtheme = theme_minimal()) +
+  labs(title = "Clusters sindrômicos — famílias RESEX Tapajós-Arapiuns")
+```
+
+## Perfil dos clusters
+
+```{r tabela_definicao_sindromes}
+
+# Criar tabela de composição das síndromes
+tabela_sindromes <- data.frame(
+  Síndrome = c("sind_resp", "sind_febril", "sind_osteo", 
+               "sind_gi", "sind_cardiomet", "sind_neuro", "sind_derm_paras"),
+  
+  Descrição = c("Síndrome Respiratória", "Síndrome Febril", "Síndrome Osteomuscular",
+                "Síndrome Gastrointestinal", "Síndrome Cardiometabólica", 
+                "Síndrome Neurológica", "Síndrome Dermatológica/Parasitária"),
+  
+  Componentes = c(
+    "HASMA, MASMA, IASMA, CASMA, HGRIPE, MGRIPE, IGRIPE, CGRIPE, HRINITE, MRINIALE, HSINUSIT, MSINUSIT, ISINUSIT, CSINUSIT, HTOSSE, MTOSSE, ITOSSE, CTOSSE, TOSSECA, TOSSMUCO, TSECMUCO, TOSINUS",
+    
+    "HFEBRE, MFEBRE, IFEBRE, CFEBRE, HGRIPE, MGRIPE, IGRIPE, CGRIPE, HVIROSE, MVIROSE",
+    
+    "HREUMAT, MREUMAT, IREUMAT, CREUMAT, HDORCAB, MDORCAB, IDORCAB, CADORCAB, HDORMUSC, MDORMUSC, IDORMUSC, CDORMUSC, HDORCOLU, MDORCOLU, IDORCOLU, HDORJOEL, IDORJOEL",
+    
+    "HDIARREIA, MDIARREIA, IDIARREIA, CDIAREIA, HESTOMAG, MGASTRIT, IGASTRIT, HVOMIT, MVOMIT, IVOMIT, CVOMIT, HDORESTG",
+    
+    "HPRESALT, MPRESALT, IPRESALT, HDIABET, MDIABETE, IDIABETE, HPROBCOL, MPROBCOL, HPROBCOR, MCORACGD, HCORACGD",
+    
+    "ANPERMOV, ANPERCON, ANDIFALA, ANPERVIS, ANPERAUD, ANNEUROL, ANDEPRES, ANTONTURA, ANMEMORI",
+    
+    "HMALARIA, HHANSENI, IINFCRIM, IINFCURI, IMICOSE, CAMICOSE, TMICOSE, CINFRESAG"
+  ),
+  
+  Quantidade = c(22, 10, 17, 12, 11, 9, 8)
+)
+
+# Visualizar tabela
+knitr::kable(tabela_sindromes, caption = "Composição das Síndromes Clínicas") %>% 
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+
+```
+
+```{r perfil-cluster}
+#| fig-cap: "Prevalência média de cada síndrome por cluster. O cluster 2 é dominado por síndrome febril (~100%) e respiratória (~95%)."
+mat_cluster %>%
+  group_by(cluster_label) %>%
+  summarise(across(all_of(vars_sind), mean, na.rm = TRUE), n = n()) %>%
+  pivot_longer(-c(cluster_label, n), names_to = "Síndrome", values_to = "Prevalência") %>%
+  mutate(Síndrome = str_remove(Síndrome, "sind_")) %>%
+  ggplot(aes(x = Síndrome, y = Prevalência, fill = cluster_label)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = percent) +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  labs(title = "Perfil sindrômico por cluster",
+       fill = "Cluster", x = NULL, y = "Prevalência na família")
+```
+
+```{r sintomas-originais}
+#| fig-cap: "Sintomas originais por cluster. CGRIPE (~70%) e CFEBRE (~43%) dominam o cluster 2, sugerindo o perfil de síndrome gripal com forte componente pediátrico."
+vars_originais <- c("HGRIPE", "MGRIPE", "CGRIPE",
+                    "HFEBRE", "MFEBRE", "CFEBRE",
+                    "HREUMAT", "MREUMAT",
+                    "HDORCAB", "MDORCAB",
+                    "HTOSSE", "MTOSSE", "CTOSSE",
+                    "HPRESALT", "MPRESALT",
+                    "HDIARREIA", "MDIARREIA")
+
+saude %>%
+  left_join(mat_cluster %>% select(Amostra, cluster), by = "Amostra") %>%
+  group_by(cluster) %>%
+  summarise(across(all_of(vars_originais), ~ mean(., na.rm = TRUE))) %>%
+  pivot_longer(-cluster, names_to = "Variavel", values_to = "Prevalencia") %>%
+  ggplot(aes(x = reorder(Variavel, Prevalencia), y = Prevalencia, fill = cluster)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = percent) +
+  scale_fill_brewer(palette = "Set2") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Sintomas originais por cluster",
+       x = NULL, y = "Proporção de famílias")
+```
+
+::: {.callout-tip}
+## Interpretação — P1
+
+Dois clusters sindrômicos emergiram com separação moderada (silhouette = 0.34):
+
+- **Cluster 1 — Sem síndrome aguda predominante** (n = `r sum(mat_cluster$cluster == 1)`, `r percent(mean(mat_cluster$cluster == 1), accuracy = 1)`): queixas crônicas difusas, sem episódio infeccioso agudo dominante.
+- **Cluster 2 — Síndrome gripal/infecciosa aguda** (n = `r sum(mat_cluster$cluster == 2)`, `r percent(mean(mat_cluster$cluster == 2), accuracy = 1)`): febre e gripe em múltiplos membros — especialmente crianças.
+:::
+
+## Distribuição por comunidade
+
+```{r dist-comunidade}
+#| fig-cap: "Composição dos clusters por comunidade. A distribuição não é homogênea (χ²=78, p<0,001)."
+#| fig-height: 8
+mat_cluster %>%
+  count(Comunidade, cluster_label) %>%
+  group_by(Comunidade) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(aes(x = Comunidade, y = prop, fill = cluster_label)) +
+  geom_col() +
+  scale_y_continuous(labels = percent) +
+  scale_fill_brewer(palette = "Set2") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Composição de clusters por comunidade",
+       x = NULL, y = "Proporção de famílias", fill = "Cluster")
+```
+
+```{r residuos}
+#| fig-cap: "Resíduos padronizados do qui-quadrado. Valores rotulados (|resíduo| ≥ 2) indicam associação significativa entre comunidade e cluster."
+#| fig-height: 8
+chisq_result <- chisq.test(
+  table(mat_cluster$Comunidade, mat_cluster$cluster),
+  simulate.p.value = TRUE
+)
+
+residuos <- chisq_result$stdres
+as.data.frame(residuos) %>%
+  rename(Comunidade = Var1, Cluster = Var2, Residuo = Freq) %>%
+  mutate(label = ifelse(abs(Residuo) >= 2, round(Residuo, 2), NA)) %>%
+  ggplot(aes(x = Cluster, y = reorder(Comunidade, Residuo), fill = Residuo)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = label), size = 3, fontface = "bold") +
+  scale_fill_gradient2(low = "steelblue", mid = "white", high = "tomato",
+                       midpoint = 0, name = "Resíduo\npadronizado") +
+  theme_minimal() +
+  theme(panel.grid = element_blank()) +
+  labs(title = "Associação entre cluster sindrômico e comunidade",
+       subtitle = "Valores rotulados: |resíduo| ≥ 2",
+       x = "Cluster", y = NULL)
+```
+
+::: {.callout-note}
+## Resultado
+Distribuição heterogênea entre comunidades: χ² = `r round(chisq_result$statistic, 1)`, p < 0,001.  
+**Excesso de síndrome aguda:** Muratuba (+3,31), Nova Vista (+3,17), Escrivão (+2,28), Nuquinim (+2,28).  
+**Excesso de baixa carga:** São Miguel (+2,42), Vista Alegre (+2,42), Nova Canaã (+2,27).
+:::
+
+---
+
+# P2 — Gradiente de exposição zoonótica {#gradiente-zoonotico}
+
+Antes de testar se a caça prediz doença, caracterizamos o cenário de exposição. Se o risco existe e é graduado, a pergunta seguinte é se ele se traduz em síndrome clínica detectável.
+
+```{r caca-prep}
+caca <- list_of_tables$Caça
+
+caca_cluster <- caca %>%
+  mutate(
+    n_presas = CPCAITIT + CPQUEIXA + CPVEADO + CPCUTIA + CPPACA +
+               CPTATU + CPMACACO + CPMACPRG + CPGUARIB +
+               CP_AVES + CPMUTUM + CPJABUTI,
+    caca_primata   = if_any(c("CPMACACO", "CPMACPRG", "CPGUARIB", "CPXAUIM"), ~ . == 1),
+    freq_alta      = if_any(c("FCTODODI", "FC1xSEM", "FC2A3xSM"), ~ . == 1),
+    contato_doente = if_any(c("PCSEMPRE", "PCSIM", "PCDVZQD"), ~ . == 1),
+    consume_doente = if_any(c("COZINCOM", "ANIMCOME"), ~ . == 1),
+    caca_ativa     = CFSIM == 1,
+    perfil_exposicao = case_when(
+      freq_alta == 1 & (contato_doente == 1 | consume_doente == 1) ~ "Alta exposição",
+      freq_alta == 1 & contato_doente == 0 & consume_doente == 0   ~ "Exposição moderada",
+      freq_alta == 0 & contato_doente == 0 & consume_doente == 0   ~ "Baixa exposição",
+      TRUE                                                          ~ "Exposição pontual"
+    ),
+    n_sinais_animal  = FERIDA + VERMES + PARASIT + SINT_DO +
+                       MAGRA + TUMOR + MANCH_BR + URA + MICROB,
+    animal_com_sinal = as.integer(n_sinais_animal >= 1)
+  ) %>%
+  mutate(across(c(caca_primata, freq_alta, contato_doente,
+                  consume_doente, caca_ativa), as.integer))
+```
+
+```{r prev-exposicao}
+#| tbl-cap: "Prevalências gerais de exposição à caça."
+caca_cluster %>%
+  summarise(
+    `Caça ativa`        = percent(mean(caca_ativa,     na.rm = TRUE), accuracy = 1),
+    `Primatas`          = percent(mean(caca_primata,   na.rm = TRUE), accuracy = 1),
+    `Alta frequência`   = percent(mean(freq_alta,      na.rm = TRUE), accuracy = 1),
+    `Contato c/ doente` = percent(mean(contato_doente, na.rm = TRUE), accuracy = 1),
+    `Consumo de doente` = percent(mean(consume_doente, na.rm = TRUE), accuracy = 1),
+    `Média de presas`   = as.character(round(mean(n_presas, na.rm = TRUE), 1))
+  ) %>%
+  pivot_longer(everything(), names_to = "Variável", values_to = "Valor") %>%
+  kable(align = c("l", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r sinais-animal}
+#| tbl-cap: "Prevalência de sinais de doença nos animais caçados. VERMES é o sinal mais prevalente (12%), sugerindo helmintozoonoses como risco prioritário."
+vars_sinal_zoonotico <- c("FERIDA", "VERMES", "PARASIT", "SINT_DO", "SINT_INF",
+                           "MAGRA", "TUMOR", "MANCH_BR", "URA", "MICROB")
+
+caca_cluster %>%
+  summarise(across(all_of(vars_sinal_zoonotico),
+                   ~ percent(mean(., na.rm = TRUE), accuracy = 1))) %>%
+  pivot_longer(everything(), names_to = "Sinal", values_to = "Prevalência") %>%
+  kable(align = c("l", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r gradiente-zoonotico}
+#| fig-cap: "Contato com animal com sinal de doença por perfil de exposição (IC 95%). O gradiente é monotônico e significativo (χ²=22,2; p<0,001): alta exposição = 44% vs baixa exposição = 18%."
+chisq_grad <- chisq.test(table(caca_cluster$perfil_exposicao,
+                                caca_cluster$animal_com_sinal),
+                          simulate.p.value = TRUE)
+
+caca_cluster %>%
+  group_by(perfil_exposicao) %>%
+  summarise(prop = mean(animal_com_sinal, na.rm = TRUE), n = n()) %>%
+  mutate(
+    perfil_exposicao = fct_reorder(perfil_exposicao, prop),
+    ic_low  = prop - 1.96 * sqrt(prop * (1 - prop) / n),
+    ic_high = prop + 1.96 * sqrt(prop * (1 - prop) / n)
+  ) %>%
+  ggplot(aes(x = perfil_exposicao, y = prop)) +
+  geom_col(fill = "#2E86AB", alpha = 0.85) +
+  geom_errorbar(aes(ymin = ic_low, ymax = ic_high), width = 0.2) +
+  scale_y_continuous(labels = percent) +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Contato com animal com sinal de doença por perfil de exposição",
+       subtitle = paste0("χ²=22,2; p=", round(chisq_grad$p.value, 4)),
+       x = NULL, y = "Proporção de famílias")
+```
+
+::: {.callout-tip}
+## Interpretação — P2
+
+Existe gradiente significativo de exposição zoonótica potencial (χ²=22,2; p<0,001). Famílias de alta exposição têm 44% de contato com animais com sinal de doença, versus 18% nas de baixa exposição. O risco zoonótico potencial existe e é graduado pela intensidade da caça. **A pergunta seguinte é se esse risco se traduz em síndrome clínica detectável.**
+:::
+
+---
+
+# P3 — A caça prediz síndrome infecciosa aguda? {#caca-prediz}
+
+## Integração dos dados
+
+```{r integracao}
+dados_integrados <- mat_cluster %>%
+  select(Amostra, Comunidade, cluster, cluster_label) %>%
+  left_join(
+    caca_cluster %>% select(Amostra, n_presas, caca_primata, freq_alta,
+                             contato_doente, consume_doente, caca_ativa,
+                             perfil_exposicao, animal_com_sinal, n_sinais_animal),
+    by = "Amostra"
+  ) %>%
+  left_join(list_of_tables$Etário  %>% select(-any_of("Comunidade")), by = "Amostra") %>%
+  left_join(list_of_tables$Hábitos %>% select(-any_of("Comunidade")), by = "Amostra") %>%
+  left_join(list_of_tables$Casa    %>% select(-any_of("Comunidade")), by = "Amostra") %>%
+  left_join(
+    list_of_tables$Atividades %>%
+      select(Amostra, AGSAUDE, ARTESANAT, COMERC, EXTRAT, PESCA, PROFESSOR, ROÇA),
+    by = "Amostra"
+  ) %>%
+  mutate(
+    tem_crianca   = as.integer(CSCRIANC > 0),
+    tem_idoso     = as.integer(CSIDOSOS > 0),
+    n_membros     = CSCRIANC + CSADOLEN + CSADULTO + CSIDOSOS,
+    prop_crianca  = CSCRIANC / n_membros,
+    ferve_agua    = as.integer(FERVSIM == 1 | FERVSEMP == 1),
+    filtra_agua   = as.integer(FILSIM == 1),
+    agua_segura   = as.integer(MICRO == 1),
+    agua_rio      = as.integer(RIO == 1),
+    casa_precaria = as.integer(BARRO == 1 | PALHA == 1)
+  )
+```
+
+## Nível familiar
+
+```{r caca-familiar}
+#| tbl-cap: "Associação entre variáveis de exposição à caça e cluster sindrômico (nível familiar). Nenhuma variável se associa positivamente ao cluster de síndrome aguda."
+vars_caca <- c("caca_ativa", "freq_alta", "contato_doente", "consume_doente")
+
+tab_caca <- map_dfr(vars_caca, function(v) {
+  tab <- table(dados_integrados[[v]], dados_integrados$cluster)
+  if (nrow(tab) < 2) return(NULL)
+  test <- chisq.test(tab, simulate.p.value = TRUE)
+  tibble(
+    Variável = v,
+    `Cluster 1 (%)` = percent(mean(dados_integrados[[v]][dados_integrados$cluster == 1], na.rm = TRUE), accuracy = 1),
+    `Cluster 2 (%)` = percent(mean(dados_integrados[[v]][dados_integrados$cluster == 2], na.rm = TRUE), accuracy = 1),
+    `p-valor` = round(test$p.value, 3)
+  )
+})
+
+tab_caca %>%
+  kable(align = c("l", "r", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE)
+```
+
+```{r fisher-consume}
+fisher_result <- fisher.test(table(dados_integrados$consume_doente, dados_integrados$cluster))
+```
+
+::: {.callout-important}
+## Resultado — consumo de animal doente
+
+Teste exato de Fisher: OR = `r round(fisher_result$estimate, 2)` (IC95% `r round(fisher_result$conf.int[1], 2)`–`r round(fisher_result$conf.int[2], 2)`), p = `r round(fisher_result$p.value, 3)`.
+
+O efeito é **inverso** ao esperado — famílias que consomem animais doentes têm **menos** síndrome aguda. Isso talvez seja um efeito (uma proxy) do isolamento geográficos?.
+:::
+
+```{r perfil-exposicao-tab}
+#| tbl-cap: "Proporção de famílias em cada cluster por perfil de exposição à caça. Não há padrão — todas as proporções ficam entre 41% e 59%."
+table(dados_integrados$perfil_exposicao,
+      dados_integrados$cluster_label) %>%
+  prop.table(margin = 1) %>%
+  round(2) %>%
+  as.data.frame() %>%
+  pivot_wider(names_from = Var2, values_from = Freq) %>%
+  rename(Perfil = Var1) %>%
+  kable(align = c("l", "r", "r")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Nível comunitário
+
+```{r dados-comunidade}
+dados_comunidade <- dados_integrados %>%
+  group_by(Comunidade) %>%
+  summarise(
+    prop_sind_aguda  = mean(cluster == 2,                         na.rm = TRUE),
+    prop_alta_exp    = mean(perfil_exposicao == "Alta exposição",  na.rm = TRUE),
+    prop_com_crianca = mean(tem_crianca,                          na.rm = TRUE),
+    media_criancas   = mean(CSCRIANC,                             na.rm = TRUE),
+    prop_agua_rio    = mean(agua_rio,                             na.rm = TRUE),
+    n = n()
+  )
+```
+
+```{r scatter-caca}
+#| fig-cap: "Síndrome aguda vs exposição à caça por comunidade. A linha de regressão é negativa, sendo talvez mais um indício para o isolamento geográfico."
+dados_comunidade %>%
+  ggplot(aes(x = prop_alta_exp, y = prop_sind_aguda, label = Comunidade)) +
+  geom_point(aes(size = n), alpha = 0.7, color = "#2E86AB") +
+  geom_text(size = 2.8, vjust = -0.8, hjust = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "tomato", linewidth = 0.8) +
+  scale_x_continuous(labels = percent) +
+  scale_y_continuous(labels = percent) +
+  theme_minimal() +
+  labs(title = "Síndrome aguda vs. exposição à caça por comunidade",
+       x = "Proporção de famílias com alta exposição à caça",
+       y = "Proporção de famílias com síndrome gripal aguda",
+       size = "n famílias")
+```
+
+::: {.callout-tip}
+## Interpretação — P3
+
+A intensidade da caça **não parece estar associada** à síndrome infecciosa aguda em nenhum nível de análise. No nível familiar, todas as variáveis têm p > 0,05. No nível comunitário, aparece uma associação negativa.
+:::
+
+---
+
+# P4 — Desvendando o gradiente negativo {#gradiente-negativo}
+
+A associação negativa observada no scatter plot é contra-intuitiva. Testamos se ela é explicada por variáveis de composição familiar e remoticidade.
+
+```{r modelos}
+m1 <- lm(prop_sind_aguda ~ prop_alta_exp,
+         data = dados_comunidade, weights = n)
+m2 <- lm(prop_sind_aguda ~ prop_alta_exp + prop_com_crianca,
+         data = dados_comunidade, weights = n)
+m3 <- lm(prop_sind_aguda ~ prop_alta_exp + prop_com_crianca + prop_agua_rio,
+         data = dados_comunidade, weights = n)
+```
+
+```{r modelos-coef}
+#| tbl-cap: "Coeficientes dos modelos de regressão ponderada por comunidade. O efeito da caça desaparece progressivamente quando variáveis de composição familiar e remoticidade entram no modelo."
+map_dfr(list(m1 = m1, m2 = m2, m3 = m3), tidy, .id = "modelo") %>%
+  filter(term != "(Intercept)") %>%
+  select(modelo, term, estimate, p.value) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    p.value  = round(p.value, 3),
+    term = recode(term,
+      "prop_alta_exp"    = "Caça intensa",
+      "prop_com_crianca" = "Famílias c/ crianças",
+      "prop_agua_rio"    = "Água do rio"
+    )
+  ) %>%
+  kable()
+  # rename(Modelo = modelo, Variável = term, Estimativa = estimate, p-valor = p.value) %>%
+  # kable(align = c("l", "l", "r", "r")) %>%
+  # kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  # row_spec(which(.$`p-valor` < 0.05), bold = TRUE)
+```
+
+```{r modelos-r2}
+#| tbl-cap: "Comparação de modelos — R² e significância global."
+map_dfr(list(m1 = m1, m2 = m2, m3 = m3), glance, .id = "modelo") %>%
+  select(modelo, r.squared, adj.r.squared, p.value) %>%
+  mutate(across(where(is.numeric), ~ round(., 3))) %>% 
+  kable()
+  # rename(Modelo = modelo, R² = r.squared, `R² ajustado` = adj.r.squared, `p-valor` = p.value) %>%
+  # kable(align = c("l", "r", "r", "r")) %>%
+  # kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r multicol}
+cor_agua  <- cor.test(dados_comunidade$prop_alta_exp, dados_comunidade$prop_agua_rio, method = "spearman")
+cor_crian <- cor.test(dados_comunidade$prop_alta_exp, dados_comunidade$prop_com_crianca, method = "spearman")
+```
+
+::: {.callout-tip}
+## Interpretação — P4
+
+O efeito da caça desaparece completamente quando variáveis de remoticidade entram no modelo (β = -0,03; p = 0,87 no m3). Caça intensa e uso de água do rio são proxies do mesmo fenômeno subjacente — **isolamento geográfico** (ρ = `r round(cor_agua$estimate, 2)`, p < 0,001). Comunidades mais remotas caçam mais, dependem de água do rio, e têm menor circulação de vírus respiratório humano.
+:::
+
+---
+
+# P5 — Composição familiar e saneamento {#composicao-familiar}
+
+A ideia aqui é verificar se a composição as variáveis sociodemográficas disponíveis poderiam ajudar a explicar o efeito do sindrome aguda.
+
+```{r composicao}
+#| tbl-cap: "Variáveis domiciliares por cluster sindrômico. Presença de crianças é o único preditor consistente."
+dados_integrados %>%
+  group_by(cluster_label) %>%
+  summarise(
+    `Famílias c/ crianças` = percent(mean(tem_crianca,    na.rm = TRUE), accuracy = 1),
+    `Média de crianças`    = round(mean(CSCRIANC,         na.rm = TRUE), 1),
+    `Ferve água`           = percent(mean(ferve_agua,     na.rm = TRUE), accuracy = 1),
+    `Filtra água`          = percent(mean(filtra_agua,    na.rm = TRUE), accuracy = 1),
+    `Água do rio`          = percent(mean(agua_rio,       na.rm = TRUE), accuracy = 1),
+    `Casa precária`        = percent(mean(casa_precaria,  na.rm = TRUE), accuracy = 1),
+    n = n()
+  ) %>%
+  rename(Cluster = cluster_label) %>%
+  kable(align = c("l", rep("r", 7))) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+---
+
+## Atividade do chefe da família {#atividade-chefe}
+
+A atividade do chefe de família (respondente do questionário) pode estar relacionada à o cluster de síndrome aguda? talvez professores que estão em contato com crianças são aqueles responsáveis pela transmissão?
+
+```{r atividades}
+#| tbl-cap: "Prevalência das atividades do chefe da família por cluster. Diferenças de 1–8 pontos percentuais em todas as categorias — sem padrão direcional."
+atividades_vars <- c("AGSAUDE", "ARTESANAT", "COMERC",
+                     "EXTRAT", "PESCA", "PROFESSOR", "ROÇA")
+
+dados_integrados %>%
+  group_by(cluster_label) %>%
+  summarise(across(all_of(atividades_vars),
+                   ~ percent(mean(., na.rm = TRUE), accuracy = 1))) %>%
+  rename(Cluster = cluster_label) %>%
+  kable(align = c("l", rep("r", length(atividades_vars)))) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+::: {.callout-tip}
+## Interpretação — P6
+
+Presença de crianças é o preditor mais consistente da síndrome aguda: 83% das famílias no cluster 2 têm crianças (média 2,1) vs 62% no cluster 1 (média 1,6). Crianças são os principais amplificadores intradomiciliares de vírus respiratórios. Saneamento, condição da casa e ocupação do chefe **não diferenciam** os clusters de forma consistente. Nem agente de saúde, nem professor, atividades talvez com maior mobilidade, apresentam prevalências distintas entre os grupos.
+:::
+
+---
+
+# Análise espacial — conectividade fluvial {#espacial}
+
+A análise não-espacial deixou a hipótese de remoticidade em aberto. Com as coordenadas das comunidades, verificamos diretamente se a distância ao rio Tapajós, utilizado como proxy de remoticidade por ser a principal via de conectividade fluvial da RESEX, explica os padrões observados.
+
+```{r espacial-prep}
+pontos <- read_sf("./pontos_resex_sisgeo.gpkg")
+
+dicionario <- tribble(
+  ~nome_ponto,  ~Comunidade,
+  "amina",      "Aminã",        "ana",        "Anã",
+  "cabec_amor", "Cabeceira do Amorim", "cameta",     "Cametá",
+  "escrivao",   "Escrivão",     "jaca",       "Jaca",
+  "jatequara",  "Jatequara",    "jauarituba", "Jauarituba",
+  "limaotuba",  "Limãotuba",    "maripa",     "Maripá",
+  "mentai",     "Mentai",       "muratuba",   "Muratuba",
+  "nova_vista", "Nova Vista",   "novo_canaa", "Nova Canaã",
+  "novo_progr", "Novo Progresso", "nuquini",  "Nuquinim",
+  "paranapixu", "Parapixuna",   "paraua",     "Parauá",
+  "pau_letra",  "Pau da Letra", "pinhel",     "Pinhel",
+  "prain_maro", "Prainha do Maro", "sao_miguel", "São Miguel",
+  "sao_pedro",  "São Pedro",    "sao_tome",   "São Tomé",
+  "suruaca",    "Suruaca",      "surucuá",    "Surucuá",
+  "tucumatuba", "Tucumatuba",   "vila_amori", "Vila do Amorim",
+  "vila_boim",  "Vila de Boim", "vila_franc", "Vila Franca",
+  "vila_nova",  "Vila Nova",    "vista_aleg", "Vista Alegre"
+)
+
+arapiuns <- c("Nova Canaã", "Vista Alegre", "Prainha do Maro", "Vila Nova",
+              "Mentai", "Nova Vista", "Aminã", "São Pedro")
+
+pontos_limpo <- pontos %>%
+  left_join(dicionario, by = c("nome" = "nome_ponto")) %>%
+  na.omit() %>%
+  mutate(
+    lon   = st_coordinates(geom)[, 1],
+    lat   = st_coordinates(geom)[, 2],
+    bacia = case_when(
+      Comunidade %in% arapiuns ~ "Arapiuns",
+      TRUE                     ~ "Tapajós"
+    )
+  )
+
+reserva_shp <- read_sf("./resex_tapajos_arapiuns.kml") %>%
+  select(-Description) %>%
+  mutate(Name = "resex")
+
+# Rio Tapajós
+rios <- ne_download(scale = 10, type = "rivers_lake_centerlines",
+                    category = "physical", returnclass = "sf")
+tapajos_rio <- rios %>%
+  filter(str_detect(name, "Tapajós|Tapajos")) %>%
+  st_transform(st_crs(pontos_limpo))
+
+pontos_limpo <- pontos_limpo %>%
+  mutate(
+    dist_tapajos_km = as.numeric(st_distance(geom, tapajos_rio)) / 1000
+  )
+```
+
+```{r mapa-bacia}
+
+# Obter os limites da reserva
+bbox <- st_bbox(reserva_shp)
+
+# Adicionar uma margem de 5% ao redor da reserva
+x_range <- bbox[3] - bbox[1]
+y_range <- bbox[4] - bbox[2]
+
+zoom_x <- c(bbox[1] - 0.01 * x_range, bbox[3] + 0.01 * x_range)
+zoom_y <- c(bbox[2] - 0.01 * y_range, bbox[4] + 0.01 * y_range)
+
+ggplot() +
+  # geom_sf(data = pa, fill = "grey", alpha = 0.5) +
+  geom_sf(data = reserva_shp, fill = "lightgreen", alpha = 0.3, 
+          color = "darkgreen") + 
+  geom_sf(data = tapajos_rio, color = "#185FA5", linewidth = 0.8) +
+  geom_sf(data = pontos_limpo, aes(color = bacia), size = 1) +
+  # geom_sf_text(data = pontos_limpo, aes(label = Comunidade),
+  #              size = 2.5, vjust = -0.8) +
+  scale_color_manual(values = c("Arapiuns" = "#E24B4A",
+                                "Tapajós" = "#185FA5"),
+                     name = "Bacia") +
+  coord_sf(xlim = zoom_x, ylim = zoom_y) +  # Aplica o zoom
+  ggpubr::theme_pubclean() +
+  labs(title = "Comunidades por bacia hidrográfica — RESEX Tapajós-Arapiuns")
+  
+```
+
+```{r integracao-espacial}
+dados_comunidade_limpo <- dados_comunidade %>%
+  left_join(
+    pontos_limpo %>%
+      st_drop_geometry() %>%
+      select(Comunidade, bacia, dist_tapajos_km),
+    by = "Comunidade"
+  ) %>%
+  mutate(arapiuns = as.integer(bacia == "Arapiuns")) %>%
+  na.omit()
+```
+
+## Arapiuns vs Tapajós
+
+```{r wilcoxon}
+#| tbl-cap: "Comparação entre bacias — Arapiuns caça mais (p=0,003) mas não tem mais síndrome aguda (p=0,845)."
+w_exp   <- wilcox.test(prop_alta_exp   ~ bacia, data = dados_comunidade_limpo)
+w_sind  <- wilcox.test(prop_sind_aguda ~ bacia, data = dados_comunidade_limpo)
+w_agua  <- wilcox.test(prop_agua_rio   ~ bacia, data = dados_comunidade_limpo)
+
+dados_comunidade_limpo %>%
+  group_by(bacia) %>%
+  summarise(
+    `n comunidades`   = n(),
+    `Alta exposição`  = percent(mean(prop_alta_exp,   na.rm = TRUE), accuracy = 1),
+    `Síndrome aguda`  = percent(mean(prop_sind_aguda, na.rm = TRUE), accuracy = 1),
+    `Água do rio`     = percent(mean(prop_agua_rio,   na.rm = TRUE), accuracy = 1)
+  ) %>%
+  rename(Bacia = bacia) %>%
+  kable(align = c("l", rep("r", 4))) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  footnote(general = paste0(
+    "Wilcoxon: Alta exposição p=", round(w_exp$p.value, 3),
+    " | Síndrome aguda p=", round(w_sind$p.value, 3),
+    " | Água do rio p=", round(w_agua$p.value, 3)
+  ))
+```
+
+## Distância ao Tapajós
+
+```{r cor-tapajos}
+cor_exp  <- cor.test(dados_comunidade_limpo$dist_tapajos_km, dados_comunidade_limpo$prop_alta_exp,   method = "spearman")
+cor_sind <- cor.test(dados_comunidade_limpo$dist_tapajos_km, dados_comunidade_limpo$prop_sind_aguda, method = "spearman")
+cor_agua2 <- cor.test(dados_comunidade_limpo$dist_tapajos_km, dados_comunidade_limpo$prop_agua_rio,  method = "spearman")
+```
+
+```{r scatter-tapajos}
+#| fig-cap: "Distância ao rio Tapajós vs síndrome aguda por bacia. Comunidades mais próximas ao Tapajós tendem a ter mais síndrome aguda (ρ=-0,43; p=0,085)."
+dados_comunidade_limpo %>%
+  ggplot(aes(x = dist_tapajos_km, y = prop_sind_aguda,
+             label = Comunidade, color = bacia)) +
+  geom_point(aes(size = n), alpha = 0.7) +
+  geom_text(size = 2.8, vjust = -0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "tomato",
+              linewidth = 0.8, aes(group = 1)) +
+  scale_y_continuous(labels = percent) +
+  scale_color_manual(values = c("Arapiuns" = "#E24B4A", "Tapajós" = "#185FA5")) +
+  theme_minimal() +
+  labs(title = "Distância ao rio Tapajós vs síndrome aguda",
+       subtitle = paste0("ρ = ", round(cor_sind$estimate, 2),
+                         " | p = ", round(cor_sind$p.value, 3)),
+       x = "Distância ao Tapajós (km)",
+       y = "Proporção de famílias com síndrome gripal aguda",
+       size = "n famílias", color = "Bacia")
+```
+
+## Modelo final
+
+```{r modelos-finais}
+m_bacia   <- lm(prop_sind_aguda ~ prop_alta_exp + prop_com_crianca + arapiuns,
+                data = dados_comunidade_limpo, weights = n)
+m_tapajos <- lm(prop_sind_aguda ~ prop_alta_exp + prop_com_crianca + dist_tapajos_km,
+                data = dados_comunidade_limpo, weights = n)
+```
+
+```{r modelos-finais-tab}
+#| tbl-cap: "Comparação de todos os modelos. m_tapajos tem o melhor R² ajustado (0,18)."
+map_dfr(list(
+  m1 = m1, m2 = m2, m3 = m3,
+  m_bacia = m_bacia, m_tapajos = m_tapajos
+), glance, .id = "modelo") %>%
+  select(modelo, r.squared, adj.r.squared, p.value) %>%
+  mutate(across(where(is.numeric), ~ round(., 3))) %>% 
+  kable()
+  # rename(Modelo = modelo, R² = r.squared, `R² ajustado` = adj.r.squared, `p-valor` = p.value) %>%
+  # kable(align = c("l", "r", "r", "r")) %>%
+  # kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  # row_spec(5, bold = TRUE, background = "#EAF3DE")
+```
+
+```{r summary-tapajos}
+#| tbl-cap: "Modelo final (m_tapajos). Distância ao Tapajós: β=-0,004; p=0,064. Caça perde efeito quando conectividade fluvial é controlada."
+tidy(m_tapajos) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(term,
+      "prop_alta_exp"    = "Caça intensa",
+      "prop_com_crianca" = "Famílias c/ crianças",
+      "dist_tapajos_km"  = "Distância ao Tapajós (km)"
+    ),
+    across(c(estimate, std.error, statistic, p.value), ~ round(., 3))
+  ) %>%
+  rename(Variável = term, Estimativa = estimate, EP = std.error,
+         `t` = statistic, `p-valor` = p.value) %>%
+  kable(align = c("l", rep("r", 4))) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+## Mapas finais
+
+```{r dados-espaciais}
+dados_espaciais <- dados_comunidade_limpo %>%
+  left_join(pontos_limpo %>% select(Comunidade, geom), by = "Comunidade") %>%
+  st_as_sf()
+```
+
+```{r mapa-sindrome}
+#| fig-cap: "Proporção de síndrome gripal aguda por comunidade na RESEX Tapajós-Arapiuns."
+ggplot() +
+  geom_sf(data = reserva_shp, fill = "grey95", color = "grey70") +
+  geom_sf(data = dados_espaciais, aes(size = n, color = prop_sind_aguda), alpha = 0.8) +
+  scale_color_viridis_c(labels = percent, name = "Síndrome\naguda") +
+  scale_size_continuous(name = "n famílias", range = c(2, 8)) +
+  theme_minimal() +
+  labs(title = "Proporção de síndrome gripal aguda por comunidade",
+       subtitle = "RESEX Tapajós-Arapiuns")
+```
+
+```{r mapa-caca}
+#| fig-cap: "Proporção de famílias com alta exposição à caça por comunidade."
+ggplot() +
+  geom_sf(data = reserva_shp, fill = "grey95", color = "grey70") +
+  geom_sf(data = dados_espaciais, aes(size = n, color = prop_alta_exp), alpha = 0.8) +
+  scale_color_viridis_c(labels = percent, name = "Alta\nexposição") +
+  scale_size_continuous(name = "n famílias", range = c(2, 8)) +
+  theme_minimal() +
+  labs(title = "Proporção de famílias com alta exposição à caça por comunidade",
+       subtitle = "RESEX Tapajós-Arapiuns")
+```
+
+---
+
+# Síntese dos achados {#sintese}
+
+```{r tabela-sintese}
+#| tbl-cap: "Síntese das perguntas de pesquisa e achados principais."
+tibble(
+  `#` = paste0("P", 1:6),
+  Pergunta = c(
+    "Qual é o perfil sindrômico das famílias?",
+    "Existe gradiente de exposição zoonótica?",
+    "A caça prediz síndrome infecciosa aguda?",
+    "O gradiente negativo é confundido por remoticidade?",
+    "Composição etária explica a síndrome aguda?",
+    "Atividade do chefe diferencia os clusters?"
+  ),
+  Resultado = c(
+    "Confirmado",
+    "Confirmado",
+    "Refutado",
+    "Confirmado",
+    "Parcialmente confirmado",
+    "Refutado"
+  ),
+  `Achado principal` = c(
+    "k=2: síndrome gripal/infecciosa aguda (49%) vs sem síndrome aguda (51%). χ²=78; p<0,001 entre comunidades.",
+    "Alta exposição: 44% de contato com animal doente vs 18% baixa (χ²=22,2; p<0,001). VERMES mais prevalente (12%).",
+    "Nenhuma variável de caça se associa ao cluster (p>0,05). Consumo de animal doente: OR=0,65; p=0,046 — efeito inverso.",
+    "Caça e água do rio são proxies de isolamento (ρ=0,68; p<0,001). Bacia Arapiuns caça mais (p=0,003) mas sem mais síndrome aguda (p=0,845). Distância ao Tapajós: β=-0,004; p=0,064.",
+    "Famílias com crianças: 83% vs 62% entre clusters (média 2,1 vs 1,6). Saneamento e casa não diferenciam.",
+    "Diferenças de 1–8 pp em todas as atividades — sem padrão."
+  )
+) %>%
+  kable(align = c("c", "l", "c", "l")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE) %>%
+  column_spec(3, bold = TRUE,
+              color = ifelse(
+                c("Confirmado", "Confirmado", "Refutado",
+                  "Confirmado", "Parcialmente confirmado", "Refutado") == "Confirmado",
+                "#27500A",
+                ifelse(
+                  c("Confirmado", "Confirmado", "Refutado",
+                    "Confirmado", "Parcialmente confirmado", "Refutado") == "Refutado",
+                  "#791F1F", "#633806"
+                )
+              ))
+```
+
+::: {.callout-note}
+## Diagrama "causal"
+
+```
+          Distância ao rio Tapajós
+        ↓                         ↓
+Maior isolamento             Menor conectividade fluvial
+        ↓                         ↓
+Maior caça intensa           Menos circulação de vírus
+(ρ=0,80; p<0,001)           respiratório humano
+                                  ↓
+                         Menos síndrome aguda
+                         (β=-0,004; p=0,064)
+
+Independentemente:
+
+Presença de crianças no domicílio
+        ↓
+Síndrome gripal/infecciosa aguda
+(83% vs 62%)
+```
+:::
+
+---
+
+# Limitações {#limitacoes}
+
+::: {.callout-warning}
+## Limitações da análise
+
+1. **Diagnóstico etiológico ausente** — não é possível distinguir vírus respiratório humano de arbovirose silvestre (Oropouche, Mayavirus, etc.) com os dados disponíveis.
+2. **Dados transversais** — sem temporalidade entre exposição e desfecho.
+3. **n = 18 comunidades na análise espacial** — poder estatístico limitado para os modelos de regressão comunitária.
+4. **3 comunidades sem coordenadas** — Rosário, Santo Amaro e São José ficaram de fora da análise espacial.
+5. **Tabela Etário incompleta** — 325 de 567 famílias, gerando NaN em algumas comunidades para as covariáveis etárias.
+6. **Distância euclidiana ao rio** — não captura tempo de deslocamento fluvial real, que dependeria de dados de mobilidade populacional.
+:::
+
+---
